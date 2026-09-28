@@ -23,3 +23,4 @@ without modifying any official files.
 | army_v4 | min 3 flags + flags avoid enemy warriors (smart warrior logic rejected: 32%) | 90% | 53-57% vs v3, 60% vs v2; economy-building priority (v5) tested: 50%, rejected |
    | army_v5 | economy buildings (ENG/HALL/DEPOT) prioritised | - | 50% vs v4, rejected |
    | army_v6 | warriors spawn at owned hospital | - | 58% then 50% on fresh seeds (noise), rejected |
+| army_v9 | army_v4 + teammate's danger-map flag routing (navigation.py) | 95% | 93% / 85% vs v4 (120 games), worst turn 66 ms, official checker ok; v1 (routing only, no warriors) = 8% vs lv2 |
