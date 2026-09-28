@@ -2,6 +2,7 @@
 # 디버깅 stderr는 게임당 1 MiB 이내로 사용하세요.
 # 미공개 점수 -1은 실제 음수 점수가 아닙니다.
 from protocol import BALANCE, DIRS, spawn, move, run
+from search import bfs
 
 def decide(view, init):
     commands = []
