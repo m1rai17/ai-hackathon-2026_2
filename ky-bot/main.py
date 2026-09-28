@@ -4,6 +4,7 @@
 from protocol import BALANCE, DIRS, spawn, move, run
 from search import bfs, capture_reserve
 import pathing
+from navigation import enemy_danger_cells, safe_flag_step
 
 
 def decide(view, init):
@@ -13,16 +14,61 @@ def decide(view, init):
     if view.my_resource >= BALANCE["units"]["F"]["cost"]:
         commands.append(spawn("F", 1))
 
+    danger = enemy_danger_cells(view, init)
+    enemy_flags = {
+        (u['x'], u['y']) for u in view.units
+        if u['team'] == view.opp and u['kind'] == 'F' and u['count'] > 0
+    }
+
 
     # TODO: 단순한 첫 방향 대신 목표 건물로 가는 경로를 선택해 보세요.
-    targets = {(b["x"], b["y"]) for b in view.buildings if b["owner"] != view.team} #neutral buildings and enemy buildings: everything worth walking to.
+    targets = {
+        (b["x"], b["y"])
+        for b in view.buildings
+        if b["owner"] != view.team
+           and (b["x"], b["y"]) not in enemy_flags
+    }
+
     for unit in view.my_units("F"):
-        building = view.building_at(unit["x"], unit["y"])
-        if building and building["owner"] != view.team:
+        start = (unit["x"], unit["y"])
+        building = view.building_at(*start)
+
+        # Stay for capture only if safe and uncontested.
+        if (
+                building
+                and building["owner"] != view.team
+                and start not in danger
+                and start not in enemy_flags
+        ):
             continue
-        step, goal, dist = pathing.nearest((unit["x"], unit["y"]), targets)
-        if step:
-            commands.append(move(unit["x"], unit["y"], "F", unit["count"], step))
+
+        # Try safe targets in nearest-first order.
+        remaining = {
+            target for target in targets
+            if target not in danger
+        }
+        step = None
+
+        while remaining:
+            _, goal, _ = pathing.nearest(start, remaining)
+            if goal is None:
+                break
+
+            step = safe_flag_step(view, init, start, goal, danger)
+            if step is not None:
+                break
+
+            remaining.remove(goal)
+
+        # Retreat even if no capture target is available.
+        if step is None and start in danger:
+            step = safe_flag_step(view, init, start, start, danger)
+
+        if step is not None:
+            commands.append(
+                move(unit["x"], unit["y"], "F", unit["count"], step)
+            )
+    
     # for unit in view.my_units("F"):
     #     building = view.building_at(unit["x"], unit["y"])
     #     if building and building["owner"] != view.team:
