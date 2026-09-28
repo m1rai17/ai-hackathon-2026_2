@@ -20,3 +20,4 @@ without modifying any official files.
 | army_v1 | lv2 with warrior cap 3 -> 8 | 90% (60 games) | 97% of money spent on flags (~275 per game) |
 | army_v2 | warriors = enemy W + 2; flags capped at targets + 1; leftover -> warriors | 85% (40 games) | beats army_v1 100%, beats a 25-warrior bot 95% |
 | army_v3 | target claiming using the pathing module. 92% vs lv2, 50% vs v2 → combat is the bottleneck
+| army_v4 | min 3 flags + flags avoid enemy warriors (smart warrior logic rejected: 32%) | 90% | 53-57% vs v3, 60% vs v2; economy-building priority (v5) tested: 50%, rejected |
