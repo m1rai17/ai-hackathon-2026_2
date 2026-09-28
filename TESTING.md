@@ -19,3 +19,4 @@ without modifying any official files.
 | teammate_v0 | flags only, nearest target | 0% (60 games) | wiped out by turns 45-85 |
 | army_v1 | lv2 with warrior cap 3 -> 8 | 90% (60 games) | 97% of money spent on flags (~275 per game) |
 | army_v2 | warriors = enemy W + 2; flags capped at targets + 1; leftover -> warriors | 85% (40 games) | beats army_v1 100%, beats a 25-warrior bot 95% |
+| army_v3 | target claiming using the pathing module. 92% vs lv2, 50% vs v2 → combat is the bottleneck
