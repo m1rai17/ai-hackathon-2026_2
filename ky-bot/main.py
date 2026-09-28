@@ -2,21 +2,35 @@
 # 디버깅 stderr는 게임당 1 MiB 이내로 사용하세요.
 # 미공개 점수 -1은 실제 음수 점수가 아닙니다.
 from protocol import BALANCE, DIRS, spawn, move, run
+from search import bfs, capture_reserve
+import pathing
+
 
 def decide(view, init):
     commands = []
     # TODO: 점령에 남길 자원과 필요한 병종을 결정해 보세요.
+    pathing.prepare(init)    #build 17 paths to all the buildings 
     if view.my_resource >= BALANCE["units"]["F"]["cost"]:
         commands.append(spawn("F", 1))
+
+
     # TODO: 단순한 첫 방향 대신 목표 건물로 가는 경로를 선택해 보세요.
+    targets = {(b["x"], b["y"]) for b in view.buildings if b["owner"] != view.team} #neutral buildings and enemy buildings: everything worth walking to.
     for unit in view.my_units("F"):
         building = view.building_at(unit["x"], unit["y"])
         if building and building["owner"] != view.team:
             continue
-        for direction, (dx, dy) in DIRS.items():
-            if init.passable(unit["x"] + dx, unit["y"] + dy):
-                commands.append(move(unit["x"], unit["y"], "F", unit["count"], direction))
-                break
+        step, goal, dist = pathing.nearest((unit["x"], unit["y"]), targets)
+        if step:
+            commands.append(move(unit["x"], unit["y"], "F", unit["count"], step))
+    # for unit in view.my_units("F"):
+    #     building = view.building_at(unit["x"], unit["y"])
+    #     if building and building["owner"] != view.team:
+    #         continue
+    #     for direction, (dx, dy) in DIRS.items():
+    #         if init.passable(unit["x"] + dx, unit["y"] + dy):
+    #             commands.append(move(unit["x"], unit["y"], "F", unit["count"], direction))
+    #             break
     return commands
 
 
