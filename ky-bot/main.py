@@ -9,14 +9,22 @@ def decide(view, init):
     if view.my_resource >= BALANCE["units"]["F"]["cost"]:
         commands.append(spawn("F", 1))
     # TODO: 단순한 첫 방향 대신 목표 건물로 가는 경로를 선택해 보세요.
+    targets = {(b["x"], b["y"]) for b in view.buildings if b["owner"] != view.team} #neutral buildings and enemy buildings: everything worth walking to.
     for unit in view.my_units("F"):
         building = view.building_at(unit["x"], unit["y"])
         if building and building["owner"] != view.team:
             continue
-        for direction, (dx, dy) in DIRS.items():
-            if init.passable(unit["x"] + dx, unit["y"] + dy):
-                commands.append(move(unit["x"], unit["y"], "F", unit["count"], direction))
-                break
+        step = bfs((unit["x"], unit["y"]), targets, init)
+        if step:
+            commands.append(move(unit["x"], unit["y"], "F", unit["count"], step))
+    #for unit in view.my_units("F"):
+        #building = view.building_at(unit["x"], unit["y"])
+        #if building and building["owner"] != view.team:
+            #continue
+        #for direction, (dx, dy) in DIRS.items():
+            #if init.passable(unit["x"] + dx, unit["y"] + dy):
+                #commands.append(move(unit["x"], unit["y"], "F", unit["count"], direction))
+                #break
     return commands
 
 
