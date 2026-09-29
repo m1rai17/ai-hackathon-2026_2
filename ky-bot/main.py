@@ -3,8 +3,9 @@
 # 미공개 점수 -1은 실제 음수 점수가 아닙니다.
 from protocol import run
 import pathing
-from army_v4_2 import choose_production, move_warriors_simple, planned_warriors, move_flags
-
+from army_v4_2 import choose_production, move_warriors_simple, planned_warriors
+from flag_strategy import move_flags, plan_objectives
+from coordination import coordinate_warriors
 
 
 def decide(view, init):
@@ -41,7 +42,6 @@ def decide(view, init):
         (b["x"], b["y"])
         for b in view.buildings
         if b["owner"] != view.team
-           and (b["x"], b["y"]) not in enemy_flags
     }
 
     nf = sum(u["count"] for u in flags)
@@ -49,16 +49,15 @@ def decide(view, init):
 
     production = choose_production(view, nf, nw, targets)
 
-    warrior_moves = move_warriors_simple(
-        view, init, warriors, enemy_w, enemy_f, my_f, targets
-    )
+    objectives = plan_objectives(view, init, flags, targets)
+    warrior_moves = coordinate_warriors(view, init, production, objectives)
 
     defenders = planned_warriors(
         view, init, production, warrior_moves
     )
 
     flag_moves = move_flags(
-        view, init, flags, targets, enemy_w, my_w, defenders
+        view, init, flags, targets, enemy_w, my_w, defenders, objectives
     )
 
     commands.extend(production)
