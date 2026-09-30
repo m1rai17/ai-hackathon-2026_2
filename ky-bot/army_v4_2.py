@@ -44,7 +44,8 @@ def we_win(ours, theirs):
 
 
 # ---------------------------------------------------------------- production
-def choose_production(view, flags_n, warriors_n, live):
+def choose_production(view, flags_n, warriors_n, live, objectives=None):
+# def choose_production(view, flags_n, warriors_n, live):
     cfg = BALANCE
     budget = max(0, view.my_resource - capture_reserve(view))
     eng = sum(b["type"] == "ENG" and b["owner"] == view.team for b in view.buildings)
@@ -65,12 +66,98 @@ def choose_production(view, flags_n, warriors_n, live):
     # make_f += extra_f
     # budget -= extra_f * fc
     # make_w += budget // wc
+        # v3.3: choose where new units appear (base or an owned hospital)
+    flag_spot, war_spot = choose_spawn_spots(view, live, objectives)
     cmds = []
     if make_w:
-        cmds.append(spawn("W", make_w))
+        cmds.append(spawn_at("W", make_w, war_spot))
     if make_f:
-        cmds.append(spawn("F", make_f))
+        cmds.append(spawn_at("F", make_f, flag_spot))
     return cmds
+
+
+# ---------------------------------------------------------------- spawn points (v3.3)
+def spawn_at(kind, count, spot):
+    """SPAWN at our base (spot=None) or at an owned hospital (spot=(x, y))."""
+    if spot is None:
+        return spawn(kind, count)
+    return spawn(kind, count, spot[0], spot[1])
+
+
+def choose_spawn_spots(view, live, objectives=None):
+    """Pick where new flags and new warriors appear: our base or a hospital we own.
+
+    Warriors go where fights are happening / about to happen / likely:
+      - our flags' planned targets that enemy units can reach   (weight 3)
+      - enemy flags close to buildings we own                    (weight 3)
+      - enemy warrior groups                                     (weight 1)
+    Each hot spot adds weight / (walking distance + 1); the higher total wins.
+    Flags go to whichever spot is closer to buildings we still want, but never to
+    a hospital that enemy warriors can reach this turn. Ties keep the base.
+    """
+    hospitals = [(b["x"], b["y"]) for b in view.buildings
+                 if b["type"] == "HOSPITAL" and b["owner"] == view.team]
+    if not hospitals:
+        return None, None                      # no choice: everything at the base
+    init = view.init
+    base = tuple(init.bases[view.team])
+    spots = [None] + hospitals                 # None = base (listed first, wins ties)
+
+    def start(spot):
+        return base if spot is None else spot
+
+    enemy_w = {}
+    enemy_f = set()
+    for u in view.units:
+        if u["team"] == view.opp and u["kind"] == "W":
+            cell = (u["x"], u["y"])
+            enemy_w[cell] = enemy_w.get(cell, 0) + u["count"]
+        elif u["team"] == view.opp and u["kind"] == "F":
+            enemy_f.add((u["x"], u["y"]))
+    enemy_reach = {c for cell in enemy_w for c in neighbours(cell, init)}
+
+    # ---- hot spots for warriors
+    hot = []
+    goals = set()
+    for targets in (objectives or {}).values():
+        goals.update(g for g in targets if g is not None)
+    for g in goals:
+        if g in enemy_reach or g in enemy_f:
+            hot.append((g, 3.0))
+    owned = [(b["x"], b["y"]) for b in view.buildings if b["owner"] == view.team]
+    for f in enemy_f:
+        if any((pathing.distance(f, o) or 99) <= 2 for o in owned):
+            hot.append((f, 3.0))
+    for cell in enemy_w:
+        hot.append((cell, 1.0))
+
+    def pull(spot):
+        total = 0.0
+        for cell, weight in hot:
+            d = pathing.distance(start(spot), cell)
+            if d is not None:
+                total += weight / (d + 1)
+        return total
+
+    war_spot = max(spots, key=pull) if hot else None   # max keeps the base on ties
+
+    # ---- flags: closest to the buildings we still want, if the hospital is safe
+    wanted = (set(live) - goals) or set(live)
+
+    def gap(spot):
+        ds = [pathing.distance(start(spot), t) for t in wanted]
+        ds = [d for d in ds if d is not None]
+        return min(ds) if ds else 999
+
+    safe = [s for s in spots if s is None or s not in enemy_reach]
+    flag_spot = min(safe, key=gap) if wanted else None  # min keeps the base on ties
+    return flag_spot, war_spot
+    # cmds = []
+    # if make_w:
+    #     cmds.append(spawn("W", make_w))
+    # if make_f:
+    #     cmds.append(spawn("F", make_f))
+    # return cmds
 
 
 
