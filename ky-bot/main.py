@@ -47,9 +47,13 @@ def decide(view, init):
     nf = sum(u["count"] for u in flags)
     nw = sum(u["count"] for u in warriors)
 
-    production = choose_production(view, nf, nw, targets)
-
+    # v3.3: plan flag targets first so production knows where fights are likely
     objectives = plan_objectives(view, init, flags, targets)
+
+    production = choose_production(view, nf, nw, targets, objectives)
+    # production = choose_production(view, nf, nw, targets)
+
+    # objectives = plan_objectives(view, init, flags, targets)
     warrior_moves = coordinate_warriors(view, init, production, objectives)
 
     defenders = planned_warriors(
