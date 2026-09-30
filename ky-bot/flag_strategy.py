@@ -5,8 +5,8 @@ from collections import defaultdict, deque
 from protocol import DIRS, move
 import pathing
 from navigation import neighbors, enemy_danger_cells
-from army_v4_2 import protected_danger_cells
-from coordination import enemy_threats
+from army_v4_2 import protected_danger_cells, produced_flags
+from coordination import enemy_threats, planned_flag_step
 
 
 _context = None
@@ -131,6 +131,19 @@ def move_flags(
 
             if defenders.get(cell, 0) <= threats[cell]:
                 immediate.add(cell)
+
+    # Include flags bought this turn; spawning resolves before movement.
+    combined = {}
+
+    for unit in list(flags) + produced_flags(view, init):
+        pos = (unit["x"], unit["y"])
+
+        if pos not in combined:
+            combined[pos] = dict(unit)
+        else:
+            combined[pos]["count"] += unit["count"]
+
+    flags = list(combined.values())
 
     # Restore one assignment record per surviving flag.
     records = []
@@ -305,6 +318,19 @@ def move_flags(
 
                     if options:
                         step = options[0][0]
+
+                # Follow the step for which warrior support was planned.
+                shared_step = planned_flag_step(pos, goal)
+
+                if shared_step is not None and goal == assignment:
+                    dx, dy = DIRS[shared_step]
+                    shared_cell = (pos[0] + dx, pos[1] + dy)
+
+                    step = (
+                        shared_step
+                        if shared_cell not in immediate
+                        else None
+                    )
 
                 # Waiting for an escort must not trap a flag in immediate danger.
                 if step is None and pos in immediate:
