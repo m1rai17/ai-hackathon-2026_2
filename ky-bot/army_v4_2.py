@@ -52,14 +52,19 @@ def choose_production(view, flags_n, warriors_n, live):
              cfg["units"]["W"]["cost"] - eng * cfg["buildings"]["eng_discount_per"])
     fc = cfg["units"]["F"]["cost"]
     enemy_w = sum(u["count"] for u in view.units if u["team"] == view.opp and u["kind"] == "W")
-    make_f = min(max(0, MIN_FLAGS - flags_n), budget // fc) if live else 0
+    # v3.2 "flags first": fill the flag target, then all remaining money to warriors
+    want_f = max(MIN_FLAGS, min(len(live), MAX_FLAGS) + 1) if live else 0
+    make_f = min(max(0, want_f - flags_n), budget // fc)
     budget -= make_f * fc
-    make_w = min(max(0, max(3, enemy_w + 2) - warriors_n), budget // wc)
-    budget -= make_w * wc
-    extra_f = min(max(0, min(len(live), MAX_FLAGS) + 1 - flags_n - make_f), budget // fc)
-    make_f += extra_f
-    budget -= extra_f * fc
-    make_w += budget // wc
+    make_w = budget // wc
+    # make_f = min(max(0, MIN_FLAGS - flags_n), budget // fc) if live else 0
+    # budget -= make_f * fc
+    # make_w = min(max(0, max(3, enemy_w + 2) - warriors_n), budget // wc)
+    # budget -= make_w * wc
+    # extra_f = min(max(0, min(len(live), MAX_FLAGS) + 1 - flags_n - make_f), budget // fc)
+    # make_f += extra_f
+    # budget -= extra_f * fc
+    # make_w += budget // wc
     cmds = []
     if make_w:
         cmds.append(spawn("W", make_w))
