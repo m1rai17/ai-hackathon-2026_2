@@ -6,6 +6,8 @@ from protocol import DIRS, BALANCE, move
 from army_v4_2 import neighbours, warrior_cost, planned_warriors
 import pathing
 
+GUARD_RANGE = 3   # v4.2: how many steps away an enemy flag counts as a threat
+
 
 def enemy_threats(view, init):
     #Upper bound on enemy warriors reaching each cell this turn.
@@ -270,7 +272,63 @@ def coordinate_warriors(view, init, production, objectives):
 
             if not missing:
                 break
-
+        # v4.2: guard our economy buildings (ENG first, then HALL) BEFORE enemy
+    # flags arrive. Only enemy flags can take a building, so a building is in
+    # danger when an enemy flag is within GUARD_RANGE steps. We send the nearest
+    # free warriors so that, on that cell, we outnumber the enemy warriors that
+    # could come with the flag (more warriors = their flag dies, building stays ours).
+    enemy_w_stacks = {
+        (u["x"], u["y"]): u["count"]
+        for u in view.units
+        if u["team"] == view.opp and u["kind"] == "W"
+    }
+    economy = sorted(
+        (
+            cell for cell, b in buildings.items()
+            if b["owner"] == view.team and b["type"] in ("ENG", "HALL")
+        ),
+        key=lambda c: (buildings[c]["type"] != "ENG", c[1], c[0]),
+    )
+    for cell in economy:
+        flag_gap = min(
+            (pathing.distance(f, cell) for f in enemy_f
+             if pathing.distance(f, cell) is not None),
+            default=None,
+        )
+        if flag_gap is None or flag_gap > GUARD_RANGE:
+            continue
+        escort = sum(
+            count for pos, count in enemy_w_stacks.items()
+            if (pathing.distance(pos, cell) or 99) <= GUARD_RANGE
+        )
+        missing = escort + 1 - committed[cell]
+        # warriors already standing on the building stay there first
+        if missing > 0 and available.get(cell, 0):
+            take = min(missing, available[cell])
+            send(cell, cell, take)
+            missing -= take
+        if missing <= 0:
+            continue
+        helpers = sorted(
+            (
+                (pathing.distance(src, cell), src)
+                for src, count in available.items()
+                if count and src != cell
+                and pathing.distance(src, cell) is not None
+                and pathing.distance(src, cell) <= GUARD_RANGE + 2
+            )
+        )
+        for _, src in helpers:
+            if missing <= 0:
+                break
+            step = pathing.step_toward(src, cell)
+            if not step:
+                continue
+            dx, dy = DIRS[step]
+            nxt = (src[0] + dx, src[1] + dy)
+            take = min(missing, available[src])
+            send(src, nxt, take)
+            missing -= take
     # Free warriors clear shared capture goals that face resistance.
     # Enemy flags remain fallback targets.
     contested = {
