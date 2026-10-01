@@ -105,41 +105,49 @@ def _counter_snowball_bonus(view, building, distance):
     return kind_bonus * (1.0 + pressure / 12.0) * scale
 
 
+def _estimated_score(view, building):
+    score = building.get("score", -1)
+    if score >= 0:
+        return score
+    mirror = view.building_at(
+        view.init.width - 1 - building["x"],
+        view.init.height - 1 - building["y"],
+    )
+    if mirror and mirror.get("score", -1) >= 0:
+        return mirror["score"]
+    return 3.0 if 5 <= building["x"] <= 9 else 1.5
+
+
 def _score_totals(view):
-    mine = sum(
-        b.get("score", 0)
-        for b in view.buildings
-        if b["owner"] == view.team and b.get("score", 0) >= 0
+    # Estimates, not exact totals: hidden enemy scores are not zero.
+    return tuple(
+        sum(_estimated_score(view, b) for b in view.buildings
+            if b["owner"] == team)
+        for team in (view.team, view.opp)
     )
-    theirs = sum(
-        b.get("score", 0)
-        for b in view.buildings
-        if b["owner"] == view.opp and b.get("score", 0) >= 0
-    )
-    return mine, theirs
+
+def _turns_left(view):
+    # TURN is one-based; the current decision still gets executed.
+    return max(0, 161 - view.turn)
+
+
+def _can_affect_score(view, distance):
+    # Arrival and the first capture/neutralization share the same turn.
+    return distance is not None and max(1, distance) <= _turns_left(view)
 
 
 def _endgame_rank_bonus(view, building, distance, capture_delay):
-    # Late turns are score decisions, not generic expansion decisions. Only
-    # reward a target if there is enough time to finish the capture. When behind,
-    # high-score buildings matter more; when ahead, shorter/surer captures are
-    # preferred so the bot does not throw away a lead on a distant target.
     if view.turn < ENDGAME_TURN:
         return 0.0
-
-    turns_left = max(0, 160 - view.turn)
-    if distance + capture_delay > turns_left:
+    if not _can_affect_score(view, distance):
         return -10000.0
-
+    score = _estimated_score(view, building)
     mine, theirs = _score_totals(view)
-    score = max(0, building.get("score", 0))
-    gap = theirs - mine
-
-    if gap > 0:
-        return 1.8 * score
-    if gap < 0:
-        return 0.8 * score + max(0, turns_left - distance) / 10.0
-    return 1.2 * score
+    weight = 1.8 if theirs > mine else 0.8 if mine > theirs else 1.2
+    # Neutralizing enemy ownership is useful even if recapture is too late.
+    full_capture = max(1, distance) + capture_delay - 1 <= _turns_left(view)
+    swing = score * (2 if building["owner"] == view.opp and full_capture else 1)
+    return weight * swing
 
 
 def move_flags(
@@ -314,34 +322,32 @@ def move_flags(
             }
 
             if view.turn >= ENDGAME_TURN:
-                turns_left = max(0, 160 - view.turn)
-                feasible = {
-                    target
-                    for target in valid
-                    if routes[target][0] + (2 if buildings[target]["owner"] == view.opp else 1) <= turns_left
+                valid = {
+                    target for target in valid
+                    if _can_affect_score(view, routes[target][0])
                 }
-                if feasible:
-                    valid = feasible
 
             if goal not in valid:
                 goal = None
 
-            # Recovery mode: if every useful target is temporarily blocked, do
-            # not idle. Pick the least-failed reachable target as a fallback.
+            # Recovery mode: choose another reachable target.
             if not valid:
                 fallback = {
                     target
                     for target in live
                     if target not in claimed
-                    and target in routes
-                    and target != pos
+                       and target in routes
+                       and target != pos
+                       and (
+                               view.turn < ENDGAME_TURN
+                               or _can_affect_score(view, routes[target][0])
+                       )
                 }
                 if fallback:
                     valid = fallback
 
             # Select a new target when the previous one is unsuitable.
             if goal is None and valid:
-
                 def ranking(target):
                     building = buildings[target]
                     distance = routes[target][0]
@@ -382,6 +388,9 @@ def move_flags(
                 assignment in live
                 and assignment not in claimed
                 and assignment not in record["blocked"]
+                and (view.turn < ENDGAME_TURN or _can_affect_score(
+                view, routes[assignment][0] if assignment in routes
+                else pathing.distance(pos, assignment)))
             ):
                 goal = assignment
 
@@ -419,11 +428,8 @@ def move_flags(
                     dx, dy = DIRS[shared_step]
                     shared_cell = (pos[0] + dx, pos[1] + dy)
 
-                    step = (
-                        shared_step
-                        if shared_cell not in immediate
-                        else None
-                    )
+                    if shared_cell not in immediate:
+                        step = shared_step
 
                 # Waiting for an escort must not trap a flag in immediate danger.
                 if step is None and pos in immediate:
@@ -544,14 +550,10 @@ def plan_objectives(view, init, flags, targets):
             }
 
             if view.turn >= ENDGAME_TURN:
-                turns_left = max(0, 160 - view.turn)
-                feasible = {
-                    position
-                    for position in valid
-                    if pathing.distance(pos, position) + (2 if buildings[position]["owner"] == view.opp else 1) <= turns_left
+                valid = {
+                    position for position in valid
+                    if _can_affect_score(view, pathing.distance(pos, position))
                 }
-                if feasible:
-                    valid = feasible
 
             goal = record.get("goal")
 

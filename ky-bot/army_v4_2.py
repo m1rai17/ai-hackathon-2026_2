@@ -313,7 +313,7 @@ def warrior_cost(view, team):
         - engineering * BALANCE['buildings']['eng_discount_per'],
     )
 
-def planned_warriors(view, init, production, warrior_moves):
+def planned_warriors(view, init, production, warrior_moves, tele_command=None):
     available = {
         (u['x'], u['y']): u['count'] for u in view.my_units('W')
     }
@@ -336,6 +336,16 @@ def planned_warriors(view, init, production, warrior_moves):
             available[position] = available.get(position, 0) + count
 
     arrivals = {}
+    if tele_command:
+        parts = tele_command.split()
+        if parts[3] == 'W':
+            source = (int(parts[1]), int(parts[2]))
+            destination = (int(parts[5]), int(parts[6]))
+            count = min(int(parts[4]), BALANCE['tele']['max_units'],
+                        available.get(source, 0))
+            available[source] = available.get(source, 0) - count
+            arrivals[destination] = count
+
     for command in warrior_moves:
         parts = command.split()
         if parts[0] != 'MOVE' or parts[3] != 'W':

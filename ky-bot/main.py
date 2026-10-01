@@ -57,11 +57,30 @@ def decide(view, init):
 
     tele_command = plan_teleport(view, init, objectives)
 
-    # objectives = plan_objectives(view, init, flags, targets)
-    warrior_moves = coordinate_warriors(view, init, production, objectives)
+    # Teleported flags have already used their movement this turn.
+    if tele_command:
+        parts = tele_command.split()
+        if parts[3] == "F":
+            source = (int(parts[1]), int(parts[2]))
+            remaining = int(parts[4])
+            movable_flags = []
+            for unit in flags:
+                unit = dict(unit)
+                if (unit["x"], unit["y"]) == source:
+                    taken = min(remaining, unit["count"])
+                    unit["count"] -= taken
+                    remaining -= taken
+                if unit["count"]:
+                    movable_flags.append(unit)
+            flags = movable_flags
+            objectives = plan_objectives(view, init, flags, targets)
+
+    warrior_moves = coordinate_warriors(
+        view, init, production, objectives, tele_command
+    )
 
     defenders = planned_warriors(
-        view, init, production, warrior_moves
+        view, init, production, warrior_moves, tele_command
     )
 
     scout_moves = move_scouts(

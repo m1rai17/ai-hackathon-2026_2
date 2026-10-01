@@ -80,7 +80,7 @@ def planned_flag_step(source, goal):
     return _flag_steps.get((source, goal))
 
 
-def coordinate_warriors(view, init, production, objectives):
+def coordinate_warriors(view, init, production, objectives, tele_command=None):
     global _flag_steps, _recent_captures, _known_owned, _known_init, _known_team
     _flag_steps = {}
     #Return legal split orders, reserving each warrior at most once.
@@ -144,6 +144,16 @@ def coordinate_warriors(view, init, production, objectives):
 
     # Include warriors explicitly reserved to stay in their current cell.
     committed = defaultdict(int)
+    if tele_command:
+        parts = tele_command.split()
+        if parts[3] == "W":
+            source = (int(parts[1]), int(parts[2]))
+            destination = (int(parts[5]), int(parts[6]))
+            count = min(int(parts[4]), BALANCE["tele"]["max_units"],
+                        available.get(source, 0))
+            available[source] = available.get(source, 0) - count
+            # Arrivals provide protection but cannot move again this turn.
+            committed[destination] += count
 
     def send(source, destination, count):
         available[source] -= count
@@ -419,6 +429,10 @@ def coordinate_warriors(view, init, production, objectives):
                 continue
             need = max(1, threats[cell]) + 1
             missing = max(0, need - committed[cell])
+            take = min(missing, available.get(cell, 0))
+            if take:
+                send(cell, cell, take)
+                missing -= take
             if missing <= 0:
                 continue
             helpers = sorted(
@@ -497,6 +511,7 @@ def coordinate_warriors(view, init, production, objectives):
                 if not count:
                     continue
                 if source == anchor:
+                    send(source, source, count)
                     continue
                 distance = pathing.distance(source, anchor)
                 if distance is None:
@@ -552,7 +567,12 @@ def coordinate_warriors(view, init, production, objectives):
         if rally_candidates:
             anchor = max(rally_candidates, key=lambda item: (item[0], -item[1][1], -item[1][0]))[1]
             for source, count in sorted(list(available.items())):
-                if not count or source == anchor:
+                if not count:
+                    continue
+                if source == anchor:
+                    take = max(0, count - 1)
+                    if take:
+                        send(source, source, take)
                     continue
                 distance = pathing.distance(source, anchor)
                 if distance is None or distance > GUARD_RANGE + 2:
