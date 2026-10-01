@@ -44,7 +44,18 @@ def we_win(ours, theirs):
 
 
 # ---------------------------------------------------------------- production
+_flag_births = None
+
+
+def produced_flags(view, init):
+    if _flag_births is not None and _flag_births[:2] == (init, view.turn):
+        return _flag_births[2]
+    return []
+
+
 def choose_production(view, flags_n, warriors_n, live, objectives=None):
+    global _flag_births
+
 # def choose_production(view, flags_n, warriors_n, live):
     cfg = BALANCE
     budget = max(0, view.my_resource - capture_reserve(view))
@@ -73,6 +84,20 @@ def choose_production(view, flags_n, warriors_n, live, objectives=None):
         cmds.append(spawn_at("W", make_w, war_spot))
     if make_f:
         cmds.append(spawn_at("F", make_f, flag_spot))
+
+    pos = flag_spot if flag_spot is not None else tuple(view.init.bases[view.team])
+
+    births = []
+    if make_f:
+        births.append({
+            "team": view.team,
+            "kind": "F",
+            "x": pos[0],
+            "y": pos[1],
+            "count": make_f,
+        })
+
+    _flag_births = (view.init, view.turn, births)
     return cmds
 
 
@@ -126,7 +151,8 @@ def choose_spawn_spots(view, live, objectives=None):
             hot.append((g, 3.0))
     owned = [(b["x"], b["y"]) for b in view.buildings if b["owner"] == view.team]
     for f in enemy_f:
-        if any((pathing.distance(f, o) or 99) <= 2 for o in owned):
+        distances = (pathing.distance(f, o) for o in owned)
+        if any(d is not None and d <= 2 for d in distances):
             hot.append((f, 3.0))
     for cell in enemy_w:
         hot.append((cell, 1.0))
@@ -149,7 +175,8 @@ def choose_spawn_spots(view, live, objectives=None):
         ds = [d for d in ds if d is not None]
         return min(ds) if ds else 999
 
-    safe = [s for s in spots if s is None or s not in enemy_reach]
+    danger = enemy_danger_cells(view, init)
+    safe = [s for s in spots if s is None or s not in danger]
     flag_spot = min(safe, key=gap) if wanted else None  # min keeps the base on ties
     return flag_spot, war_spot
     # cmds = []

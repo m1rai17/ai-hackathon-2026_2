@@ -61,7 +61,16 @@ def enemy_threats(view, init):
     return threats
 
 
+_flag_steps = {}
+
+
+def planned_flag_step(source, goal):
+    return _flag_steps.get((source, goal))
+
+
 def coordinate_warriors(view, init, production, objectives):
+    global _flag_steps
+    _flag_steps = {}
     #Return legal split orders, reserving each warrior at most once.
 
     pathing.prepare(init)
@@ -162,6 +171,43 @@ def coordinate_warriors(view, init, production, objectives):
             goals.add(goal)
 
             step = pathing.step_toward(source, goal)
+
+            # Prefer a shortest-path step with a smaller support deficit.
+            distance = pathing.distance(source, goal)
+            options = [
+                cell
+                for cell in neighbours(source, init)
+                if cell != source
+                   and distance is not None
+                   and pathing.distance(cell, goal) == distance - 1
+            ]
+
+            if options:
+                def step_rank(cell):
+                    support = sum(
+                        count
+                        for pos, count in available.items()
+                        if pos in neighbours(cell, init)
+                    )
+
+                    required = threats[cell] + int(cell in enemy_f)
+
+                    return (
+                        max(0, required - support),
+                        threats[cell],
+                        cell[1],
+                        cell[0],
+                    )
+
+                chosen = min(options, key=step_rank)
+
+                step = next(
+                    direction
+                    for direction, (dx, dy) in DIRS.items()
+                    if (source[0] + dx, source[1] + dy) == chosen
+                )
+
+            _flag_steps[(source, goal)] = step
 
             if step:
                 dx, dy = DIRS[step]
