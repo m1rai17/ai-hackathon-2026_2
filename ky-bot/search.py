@@ -1,6 +1,7 @@
 """예제의 너비 우선 탐색과 점령 자원 예약."""
 from collections import deque
 from protocol import DIRS, BALANCE
+import pathing
 
 def directions(init):
     """같은 거리라면 자기 본진 기준의 고정 방향 순서로 결정한다."""
@@ -30,23 +31,53 @@ def bfs(start, targets, init):
     return None
 
 
-def capture_reserve(view):
-    """점령 비용을 남겨 생산이 점령을 방해하지 않게 한다."""
+def capture_reserve(view, objectives=None):
+    """Reserve one capture-stage cost for every distinct building being captured this turn."""
     cfg = BALANCE
-    owns = any(b["type"] == "LIBRARY" and b["owner"] == view.team for b in view.buildings)
+    owns = any(
+        b["type"] == "LIBRARY" and b["owner"] == view.team
+        for b in view.buildings
+    )
     base = cfg["capture"]["capture_cost"]
-    costs = [base]
+
+    # Multiple flags on the same building still consume only one building-level
+    # capture cost. Reserve the sum across distinct buildings.
+    pending = {}
+
+    def add_building(b):
+        if not b or b["owner"] == view.team or b["id"] in pending:
+            return
+        cost = base * (
+            cfg["capture"]["plaza_multiplier"]
+            if b["type"] == "PLAZA"
+            else 1
+        )
+        pending[b["id"]] = max(
+            cfg["capture"]["min_capture_cost"],
+            cost - (cfg["buildings"]["library_discount"] if owns else 0),
+        )
+
     for u in view.my_units("F"):
-        b = view.building_at(u["x"], u["y"])
-        if b and b["owner"] != view.team:
-            cost = base * (cfg["capture"]["plaza_multiplier"] if b["type"] == "PLAZA" else 1)
-            costs.append(
-                max(
-                    cfg["capture"]["min_capture_cost"],
-                    cost - (cfg["buildings"]["library_discount"] if owns else 0),
-                )
-            )
-    return max(costs)
+        add_building(view.building_at(u["x"], u["y"]))
+
+    # Production is chosen before movement. When an objective is exactly one
+    # step away, this flag is expected to reach/capture the building during the
+    # same turn, so reserve that cost too. This is what the previous version was
+    # missing in multi-capture turns.
+    for source, assigned in (objectives or {}).items():
+        source = tuple(source)
+        for goal in assigned or []:
+            if goal is None:
+                continue
+            goal = tuple(goal)
+            b = view.building_at(*goal)
+            if not b or b["owner"] == view.team:
+                continue
+            distance = pathing.distance(source, goal)
+            if distance is not None and distance <= 1:
+                add_building(b)
+
+    return sum(pending.values())
 
 
 

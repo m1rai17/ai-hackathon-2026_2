@@ -4,9 +4,19 @@ from collections import defaultdict
 
 from protocol import DIRS, BALANCE, move
 from army_v4_2 import neighbours, warrior_cost, planned_warriors
+from adaptive import analyze as analyze_adaptive
 import pathing
 
-GUARD_RANGE = 3   # v4.2: how many steps away an enemy flag counts as a threat
+GUARD_RANGE = 4   # v4.2: how many steps away an enemy flag counts as a threat
+RETENTION_TURNS = 4
+
+# Cells that were newly captured by us in the previous few turns. Keeping a
+# small resident guard here prevents the flag from winning a building and then
+# immediately abandoning it to chase the next objective.
+_recent_captures = {}
+_known_owned = None
+_known_init = None
+_known_team = None
 
 
 def enemy_threats(view, init):
@@ -71,11 +81,35 @@ def planned_flag_step(source, goal):
 
 
 def coordinate_warriors(view, init, production, objectives):
-    global _flag_steps
+    global _flag_steps, _recent_captures, _known_owned, _known_init, _known_team
     _flag_steps = {}
     #Return legal split orders, reserving each warrior at most once.
 
     pathing.prepare(init)
+
+    # Detect fresh captures before allocating this turn's warriors. A capture
+    # is strategically different from an old owned building because the new
+    # owner has not had time to establish a defensive buffer yet.
+    owned_now = {
+        (b["x"], b["y"])
+        for b in view.buildings
+        if b["owner"] == view.team
+    }
+    if _known_init is not init or _known_team != view.team:
+        _recent_captures = {}
+        _known_owned = set(owned_now)
+        _known_init = init
+        _known_team = view.team
+    else:
+        previous = _known_owned or set()
+        for cell in owned_now - previous:
+            _recent_captures[cell] = view.turn + RETENTION_TURNS
+        _recent_captures = {
+            cell: until
+            for cell, until in _recent_captures.items()
+            if until >= view.turn and cell in owned_now
+        }
+        _known_owned = set(owned_now)
 
     available = {
         position: count
@@ -86,6 +120,7 @@ def coordinate_warriors(view, init, production, objectives):
     }
 
     threats = enemy_threats(view, init)
+    adaptive = analyze_adaptive(view, init)
 
     enemy_f = {
         (u["x"], u["y"])
@@ -329,6 +364,210 @@ def coordinate_warriors(view, init, production, objectives):
             take = min(missing, available[src])
             send(src, nxt, take)
             missing -= take
+    # RETENTION: newly captured buildings get a short-lived resident guard.
+    # This is deliberately below direct threat jobs, so a real attack can still
+    # pull the guard outward when necessary.
+    for cell, until in sorted(_recent_captures.items()):
+        if until < view.turn or cell not in buildings:
+            continue
+        building = buildings[cell]
+        if building["owner"] != view.team:
+            continue
+        desired = max(1, threats[cell])
+        missing = desired - committed[cell]
+        if missing > 0 and available.get(cell, 0):
+            take = min(missing, available[cell])
+            send(cell, cell, take)
+            missing -= take
+        if missing > 0:
+            helpers = sorted(
+                (
+                    (pathing.distance(src, cell), src)
+                    for src, count in available.items()
+                    if count and src != cell
+                    and pathing.distance(src, cell) is not None
+                    and pathing.distance(src, cell) <= 2
+                )
+            )
+            for _, src in helpers:
+                if missing <= 0:
+                    break
+                step = pathing.step_toward(src, cell)
+                if not step:
+                    continue
+                dx, dy = DIRS[step]
+                nxt = (src[0] + dx, src[1] + dy)
+                take = min(missing, available[src])
+                send(src, nxt, take)
+                missing -= take
+
+    # LAST-BUILDING EMERGENCY: when only one or two buildings remain, losing
+    # another one is much more damaging than a normal objective delay. Protect
+    # every remaining building, with extra weight on cells facing enemy flags.
+    remaining = [
+        cell for cell, b in buildings.items()
+        if b["owner"] == view.team
+    ]
+    if len(remaining) <= 2:
+        for cell in sorted(remaining):
+            nearby_flag = min(
+                (pathing.distance(f, cell) for f in enemy_f
+                 if pathing.distance(f, cell) is not None),
+                default=None,
+            )
+            if nearby_flag is None or nearby_flag > GUARD_RANGE + 1:
+                continue
+            need = max(1, threats[cell]) + 1
+            missing = max(0, need - committed[cell])
+            if missing <= 0:
+                continue
+            helpers = sorted(
+                (
+                    (pathing.distance(src, cell), src)
+                    for src, count in available.items()
+                    if count and pathing.distance(src, cell) is not None
+                    and pathing.distance(src, cell) <= GUARD_RANGE + 2
+                )
+            )
+            for _, src in helpers:
+                if missing <= 0:
+                    break
+                step = pathing.step_toward(src, cell)
+                if not step:
+                    continue
+                dx, dy = DIRS[step]
+                nxt = (src[0] + dx, src[1] + dy)
+                take = min(missing, available[src])
+                send(src, nxt, take)
+                missing -= take
+
+    # ADAPTIVE PRESSURE MODE: when the opponent has a materially larger army
+    # close to our territory, stop scattering free warriors across many capture
+    # objectives. Rally them toward one concrete defensive anchor so the next
+    # fight is decided by a combined stack rather than repeated small losses.
+    if adaptive["mode"] == "emergency" and (adaptive["recent_losses"] >= 2 or adaptive["threatened_buildings"] >= 2):
+        defensive_candidates = []
+        for cell, building in buildings.items():
+            if building["owner"] != view.team:
+                continue
+            threat = threats[cell]
+            enemy_flag_near = any(
+                pathing.distance(f, cell) is not None
+                and pathing.distance(f, cell) <= GUARD_RANGE
+                for f in enemy_f
+            )
+            if not threat and not enemy_flag_near:
+                continue
+            value = max(1, building.get("score", 1))
+            if building["type"] == "ENG":
+                value += 5
+            elif building["type"] == "HALL":
+                value += 4
+            elif building["type"] == "PLAZA":
+                value += 3
+            score = threat * 3 + value + (8 if enemy_flag_near else 0)
+            defensive_candidates.append((score, cell))
+
+        if not defensive_candidates and adaptive["near_enemy_w_cells"]:
+            # The enemy army is close, but no building is under a direct Flag
+            # threat yet. Rally on our most valuable owned anchor instead of
+            # walking a newly grouped stack straight into the enemy formation.
+            safe_anchors = []
+            for cell, building in buildings.items():
+                if building["owner"] != view.team:
+                    continue
+                value = max(1, building.get("score", 1))
+                if building["type"] == "ENG":
+                    value += 5
+                elif building["type"] == "HALL":
+                    value += 4
+                elif building["type"] == "PLAZA":
+                    value += 3
+                enemy_distance = min(
+                    (pathing.distance(wcell, cell) for wcell in adaptive["near_enemy_w_cells"]
+                     if pathing.distance(wcell, cell) is not None),
+                    default=99,
+                )
+                safe_anchors.append((value + max(0, 8 - enemy_distance), cell))
+            defensive_candidates.extend(safe_anchors)
+
+        if defensive_candidates:
+            anchor = max(defensive_candidates, key=lambda item: (item[0], -item[1][1], -item[1][0]))[1]
+            for source, count in sorted(list(available.items())):
+                if not count:
+                    continue
+                if source == anchor:
+                    continue
+                distance = pathing.distance(source, anchor)
+                if distance is None:
+                    continue
+                step = pathing.step_toward(source, anchor)
+                if not step:
+                    continue
+                dx, dy = DIRS[step]
+                destination = (source[0] + dx, source[1] + dy)
+                # In emergency mode, keep the whole available stack moving
+                # toward the anchor. In pressure mode, keep at least one unit
+                # free if a direct building guard was already scheduled.
+                take = count if adaptive["mode"] == "emergency" else max(0, count - 1)
+                if take:
+                    send(source, destination, take)
+
+    # PREDICTIVE PRESSURE RALLY: if the opponent can create a materially larger
+    # Warrior force next turn, do not wait for an actual capture to be threatened.
+    # Rally a bounded portion of otherwise-free Warriors toward one safe owned
+    # anchor. This is deliberately weaker than emergency mode so normal expansion
+    # still remains the default.
+    if adaptive["mode"] == "pressure" and adaptive["projected_gap"] >= 5:
+        rally_candidates = []
+        for cell, building in buildings.items():
+            if building["owner"] != view.team:
+                continue
+            value = max(1, building.get("score", 1))
+            if building["type"] == "ENG":
+                value += 5
+            elif building["type"] == "HALL":
+                value += 4
+            elif building["type"] == "PLAZA":
+                value += 3
+            enemy_distance = min(
+                (pathing.distance(w, cell) for w in adaptive["near_enemy_w_cells"]
+                 if pathing.distance(w, cell) is not None),
+                default=99,
+            )
+            flag_distance = min(
+                (pathing.distance(f, cell) for f in enemy_f
+                 if pathing.distance(f, cell) is not None),
+                default=99,
+            )
+            urgency = 0
+            if enemy_distance <= GUARD_RANGE + 1:
+                urgency += 6
+            if flag_distance <= GUARD_RANGE:
+                urgency += 8
+            if building["type"] in ("ENG", "HALL"):
+                urgency += 3
+            rally_candidates.append((value + urgency - min(enemy_distance, 8), cell))
+
+        if rally_candidates:
+            anchor = max(rally_candidates, key=lambda item: (item[0], -item[1][1], -item[1][0]))[1]
+            for source, count in sorted(list(available.items())):
+                if not count or source == anchor:
+                    continue
+                distance = pathing.distance(source, anchor)
+                if distance is None or distance > GUARD_RANGE + 2:
+                    continue
+                step = pathing.step_toward(source, anchor)
+                if not step:
+                    continue
+                dx, dy = DIRS[step]
+                destination = (source[0] + dx, source[1] + dy)
+                # Keep one Warrior free per source in pressure mode for direct
+                # reactions; the rest become part of the rally.
+                take = max(0, count - 1)
+                if take:
+                    send(source, destination, take)
+
     # Free warriors clear shared capture goals that face resistance.
     # Enemy flags remain fallback targets.
     contested = {

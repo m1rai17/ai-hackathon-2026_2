@@ -7,6 +7,7 @@ import pathing
 from navigation import neighbors, enemy_danger_cells
 from army_v4_2 import protected_danger_cells, produced_flags
 from coordination import enemy_threats, planned_flag_step
+from adaptive import analyze as analyze_adaptive
 
 
 _context = None
@@ -14,8 +15,9 @@ _last_turn = -1
 _expected = {}
 _depots_seen = set()
 
-STALL_LIMIT = 6
-COOLDOWN = 5
+STALL_LIMIT = 5
+COOLDOWN = 4
+ENDGAME_TURN = 135
 
 
 def _routes(init, start, danger):
@@ -77,6 +79,67 @@ def _value(building, view, owned, by_position):
     # Hospital production and teleportation are not used by our army yet.
     # Do not award extra value for abilities the bot cannot currently use.
     return score + bonus * time_left
+
+
+def _counter_snowball_bonus(view, building, distance):
+    """Prefer realistic enemy-economy cuts when predictive pressure is active."""
+    adaptive = analyze_adaptive(view, view.init)
+    if adaptive["mode"] == "normal":
+        return 0.0
+    if building["owner"] != view.opp:
+        return 0.0
+
+    # ENG lowers future Warrior cost, HALL raises recurring income, and HOSPITAL
+    # provides forward production. The bonus is deliberately distance-scaled so
+    # a reachable economic cut can beat a distant generic target.
+    kind_bonus = {
+        "ENG": 5.0,
+        "HALL": 4.0,
+        "HOSPITAL": 3.0,
+    }.get(building["type"], 0.0)
+    if not kind_bonus:
+        return 0.0
+
+    pressure = min(10.0, max(0.0, adaptive["projected_gap"]))
+    scale = 1.0 if distance is None else max(0.35, 1.0 - distance / 20.0)
+    return kind_bonus * (1.0 + pressure / 12.0) * scale
+
+
+def _score_totals(view):
+    mine = sum(
+        b.get("score", 0)
+        for b in view.buildings
+        if b["owner"] == view.team and b.get("score", 0) >= 0
+    )
+    theirs = sum(
+        b.get("score", 0)
+        for b in view.buildings
+        if b["owner"] == view.opp and b.get("score", 0) >= 0
+    )
+    return mine, theirs
+
+
+def _endgame_rank_bonus(view, building, distance, capture_delay):
+    # Late turns are score decisions, not generic expansion decisions. Only
+    # reward a target if there is enough time to finish the capture. When behind,
+    # high-score buildings matter more; when ahead, shorter/surer captures are
+    # preferred so the bot does not throw away a lead on a distant target.
+    if view.turn < ENDGAME_TURN:
+        return 0.0
+
+    turns_left = max(0, 160 - view.turn)
+    if distance + capture_delay > turns_left:
+        return -10000.0
+
+    mine, theirs = _score_totals(view)
+    score = max(0, building.get("score", 0))
+    gap = theirs - mine
+
+    if gap > 0:
+        return 1.8 * score
+    if gap < 0:
+        return 0.8 * score + max(0, turns_left - distance) / 10.0
+    return 1.2 * score
 
 
 def move_flags(
@@ -161,6 +224,7 @@ def move_flags(
                     "best": 10000,
                     "stall": 0,
                     "blocked": {},
+                    "recoveries": 0,
                 }
 
             record["blocked"] = {
@@ -235,6 +299,7 @@ def move_flags(
 
                 if record["stall"] >= STALL_LIMIT:
                     record["blocked"][goal] = view.turn + COOLDOWN
+                    record["recoveries"] = record.get("recoveries", 0) + 1
                     goal = None
             else:
                 goal = None
@@ -248,8 +313,31 @@ def move_flags(
                 and target not in record["blocked"]
             }
 
+            if view.turn >= ENDGAME_TURN:
+                turns_left = max(0, 160 - view.turn)
+                feasible = {
+                    target
+                    for target in valid
+                    if routes[target][0] + (2 if buildings[target]["owner"] == view.opp else 1) <= turns_left
+                }
+                if feasible:
+                    valid = feasible
+
             if goal not in valid:
                 goal = None
+
+            # Recovery mode: if every useful target is temporarily blocked, do
+            # not idle. Pick the least-failed reachable target as a fallback.
+            if not valid:
+                fallback = {
+                    target
+                    for target in live
+                    if target not in claimed
+                    and target in routes
+                    and target != pos
+                }
+                if fallback:
+                    valid = fallback
 
             # Select a new target when the previous one is unsuitable.
             if goal is None and valid:
@@ -267,7 +355,12 @@ def move_flags(
                         view,
                         owned,
                         buildings,
-                    ) / (distance + capture_delay + 1)
+                    )
+                    endgame_bonus = _endgame_rank_bonus(
+                        view, building, distance, capture_delay
+                    )
+                    recovery_penalty = 0.8 if target in record["blocked"] else 0.0
+                    utility = (utility + endgame_bonus - recovery_penalty) / (distance + capture_delay + 1)
 
                     return (
                         -utility,
@@ -450,6 +543,16 @@ def plan_objectives(view, init, flags, targets):
                 and pathing.distance(pos, position) is not None
             }
 
+            if view.turn >= ENDGAME_TURN:
+                turns_left = max(0, 160 - view.turn)
+                feasible = {
+                    position
+                    for position in valid
+                    if pathing.distance(pos, position) + (2 if buildings[position]["owner"] == view.opp else 1) <= turns_left
+                }
+                if feasible:
+                    valid = feasible
+
             goal = record.get("goal")
 
             if goal not in valid:
@@ -464,6 +567,12 @@ def plan_objectives(view, init, flags, targets):
                         view,
                         owned,
                         buildings,
+                    )
+                    value += _endgame_rank_bonus(
+                        view, building, distance, delay
+                    )
+                    value += _counter_snowball_bonus(
+                        view, building, distance
                     )
 
                     return (

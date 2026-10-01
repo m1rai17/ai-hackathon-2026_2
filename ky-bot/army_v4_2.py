@@ -10,11 +10,14 @@ so the enemy W that can hit a cell next turn are those ON it or ADJACENT to it.
 import sys
 from protocol import BALANCE, DIRS, spawn, move
 from search import capture_reserve
+from adaptive import analyze as analyze_adaptive
 import pathing
 from navigation import enemy_danger_cells, safe_flag_step
 
 MAX_FLAGS = 6
 MIN_FLAGS = 3
+MAX_SCOUTS = 0   # v4.5: empirical test favored scouts-off
+SCOUT_PHASE_END = 90
 DEBUG = False
 
 
@@ -58,16 +61,52 @@ def choose_production(view, flags_n, warriors_n, live, objectives=None):
 
 # def choose_production(view, flags_n, warriors_n, live):
     cfg = BALANCE
-    budget = max(0, view.my_resource - capture_reserve(view))
+    budget = max(0, view.my_resource - capture_reserve(view, objectives))
     eng = sum(b["type"] == "ENG" and b["owner"] == view.team for b in view.buildings)
     wc = max(cfg["buildings"]["eng_cost_floor"],
              cfg["units"]["W"]["cost"] - eng * cfg["buildings"]["eng_discount_per"])
     fc = cfg["units"]["F"]["cost"]
-    enemy_w = sum(u["count"] for u in view.units if u["team"] == view.opp and u["kind"] == "W")
-    # v3.2 "flags first": fill the flag target, then all remaining money to warriors
-    want_f = max(MIN_FLAGS, min(len(live), MAX_FLAGS) + 1) if live else 0
+    adaptive = analyze_adaptive(view, view.init)
+    enemy_w = adaptive["enemy_w"]
+
+    # v4.4 adaptive production: normal games can keep several Flags active,
+    # but replay evidence shows that against a nearby Warrior flood we need to
+    # stop spending early budget on extra Flags and turn that budget into W.
+    if adaptive["mode"] == "emergency":
+        want_f = min(3, len(live)) if live else 0
+    elif adaptive["mode"] == "pressure":
+        want_f = min(4, len(live)) if live else 0
+        # When the projected next-turn Warrior gap is large, keep one fewer
+        # Flag active so the same production budget stays available for W.
+        if adaptive["projected_gap"] >= 7:
+            want_f = min(want_f, max(0, len(live) - 1))
+    else:
+        want_f = max(MIN_FLAGS, min(len(live), MAX_FLAGS) + 1) if live else 0
+
     make_f = min(max(0, want_f - flags_n), budget // fc)
     budget -= make_f * fc
+
+    scouts_n = sum(
+        u["count"] for u in view.my_units("S")
+    )
+    make_s = 0
+    if (
+        adaptive["mode"] == "normal"
+        and view.turn <= SCOUT_PHASE_END
+        and scouts_n < MAX_SCOUTS
+        and __import__("scouting").unresolved_buildings(view, view.init)
+        and budget >= wc + cfg["units"]["S"]["cost"]
+    ):
+        scout_cost = cfg["units"]["S"]["cost"]
+        max_affordable = max(
+            0, (budget - wc) // scout_cost
+        )
+        make_s = min(
+            MAX_SCOUTS - scouts_n,
+            max_affordable,
+        )
+        budget -= make_s * scout_cost
+
     make_w = budget // wc
     # make_f = min(max(0, MIN_FLAGS - flags_n), budget // fc) if live else 0
     # budget -= make_f * fc
@@ -79,11 +118,19 @@ def choose_production(view, flags_n, warriors_n, live, objectives=None):
     # make_w += budget // wc
         # v3.3: choose where new units appear (base or an owned hospital)
     flag_spot, war_spot = choose_spawn_spots(view, live, objectives)
+
+    scout_spot = None
+    if make_s:
+        from scouting import choose_scout_spawn
+        scout_spot = choose_scout_spawn(view, view.init)
+
     cmds = []
     if make_w:
         cmds.append(spawn_at("W", make_w, war_spot))
     if make_f:
         cmds.append(spawn_at("F", make_f, flag_spot))
+    if make_s:
+        cmds.append(spawn_at("S", make_s, scout_spot))
 
     pos = flag_spot if flag_spot is not None else tuple(view.init.bases[view.team])
 
@@ -152,8 +199,8 @@ def choose_spawn_spots(view, live, objectives=None):
     owned = [(b["x"], b["y"]) for b in view.buildings if b["owner"] == view.team]
     for f in enemy_f:
         distances = (pathing.distance(f, o) for o in owned)
-        if any(d is not None and d <= 2 for d in distances):
-            hot.append((f, 3.0))
+        if any(d is not None and d <= 4 for d in distances):
+            hot.append((f, 5.0))
     for cell in enemy_w:
         hot.append((cell, 1.0))
 
