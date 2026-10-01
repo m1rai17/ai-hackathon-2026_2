@@ -6,6 +6,8 @@ import pathing
 from army_v4_2 import choose_production, move_warriors_simple, planned_warriors
 from flag_strategy import move_flags, plan_objectives
 from coordination import coordinate_warriors
+from scouting import move_scouts
+from teleport import plan_teleport
 
 
 def decide(view, init):
@@ -53,6 +55,8 @@ def decide(view, init):
     production = choose_production(view, nf, nw, targets, objectives)
     # production = choose_production(view, nf, nw, targets)
 
+    tele_command = plan_teleport(view, init, objectives)
+
     # objectives = plan_objectives(view, init, flags, targets)
     warrior_moves = coordinate_warriors(view, init, production, objectives)
 
@@ -60,11 +64,19 @@ def decide(view, init):
         view, init, production, warrior_moves
     )
 
+    scout_moves = move_scouts(
+        view, init, view.my_units("S")
+    )
+
     flag_moves = move_flags(
         view, init, flags, targets, enemy_w, my_w, defenders, objectives
     )
 
     commands.extend(production)
+    # TELE comes before ordinary movement so source units are available for it.
+    if tele_command:
+        commands.append(tele_command)
+    commands.extend(scout_moves)
     commands.extend(warrior_moves)
     commands.extend(flag_moves)
 
